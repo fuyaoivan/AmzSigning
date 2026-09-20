@@ -15,6 +15,7 @@ public protocol CommandRunning {
 /// including compiler and signing children, rather than leaving an orphan build.
 public final class CommandRunner: CommandRunning {
     public var logURL: URL?
+    public var developerDirectory: String?
     private let paths: Paths
     public init(paths: Paths, logURL: URL? = nil) { self.paths = paths; self.logURL = logURL }
     public func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) throws -> CommandOutput {
@@ -34,6 +35,8 @@ public final class CommandRunner: CommandRunning {
         environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
         environment["TMPDIR"] = paths.temporary.path + "/"
         environment["NSUnbufferedIO"] = "YES"
+        environment["LC_ALL"] = "en_US.UTF-8"
+        if let developerDirectory { environment["DEVELOPER_DIR"] = developerDirectory }
         let env = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer { argv.forEach { free($0) }; env.forEach { free($0) } }
         var pid: pid_t = 0
@@ -92,6 +95,9 @@ extension CommandRunning {
     @discardableResult public func checked(_ executable: String, _ arguments: [String], timeout: TimeInterval = 30) throws -> CommandOutput {
         let output = try run(executable, arguments, timeout: timeout)
         guard output.status == 0 else {
+            if ["/usr/bin/xcodebuild", "/usr/bin/xcrun"].contains(executable), let issue = SetupIssue.classify(output.text) {
+                throw SetupRequired(issue)
+            }
             throw AmzError("\(URL(fileURLWithPath: executable).lastPathComponent) 执行失败（\(output.status)）\n" + String(output.text.suffix(4000)))
         }
         return output

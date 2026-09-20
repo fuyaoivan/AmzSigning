@@ -15,6 +15,7 @@ import Darwin
     var running: Bool {
         starting || (state.activityPID.map { kill($0, 0) == 0 } ?? false)
     }
+    var actionRequired: SetupIssue? { state.toolchain?.issue ?? state.projects.first(where: { $0.enabled && $0.retryIssue != nil })?.retryIssue }
     var canRenew: Bool { !running && state.mode == .automatic && state.projects.contains(where: \.enabled) }
     init() {
         do {
@@ -38,7 +39,7 @@ import Darwin
         Task {
             do {
                 try await Task.detached { try Scheduler.install(worker: path, paths: paths) }.value
-                schedulerReady = true; reload()
+                schedulerReady = true; reload(); launch("check")
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -60,6 +61,13 @@ import Darwin
     func setMode(_ mode: RunMode) {
         change { $0.mode = mode }
         if mode == .automatic { launch("tick") }
+    }
+    func openXcode() {
+        guard let path = state.toolchain?.selection.developerDirectory else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications")); return
+        }
+        let app = URL(fileURLWithPath: path).deletingLastPathComponent().deletingLastPathComponent()
+        NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration())
     }
     func scanProjects() {
         let panel = NSOpenPanel()

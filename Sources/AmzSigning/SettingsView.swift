@@ -124,11 +124,14 @@ struct SettingsView: View {
     private var renewalStatus: (title: String, color: Color)? {
         if model.running { return ("正在执行", SigningStyle.blue) }
         guard !paused, !enabled.isEmpty else { return nil }
+        if model.actionRequired != nil { return ("续签需要处理", SigningStyle.amber) }
+        guard model.state.toolchain != nil else { return ("正在检查运行环境", SigningStyle.blue) }
         return model.schedulerReady ? ("自动续签已就绪", SigningStyle.green) : ("正在检查调度", SigningStyle.blue)
     }
 
     private var renewalTitle: String {
         if paused { return model.state.mode.title }
+        if let issue = model.actionRequired { return issue.title }
         return enabled.isEmpty ? "未启用项目" : "\(enabled.count) 个项目已启用"
     }
 
@@ -145,15 +148,26 @@ struct SettingsView: View {
             }
             Spacer(minLength: 0)
             if model.running { ProgressView().controlSize(.small) }
-            Button { model.launch("renew") } label: { Label("立即续签", systemImage: "arrow.clockwise") }
-                .buttonStyle(SigningButtonStyle(kind: .primary)).disabled(!model.canRenew)
-                .keyboardShortcut("r", modifiers: .command)
+            if let issue = model.actionRequired {
+                VStack(spacing: 6) {
+                    if issue.isToolchain || issue == .account || issue == .deviceSupport {
+                        Button("打开 Xcode") { model.openXcode() }.buttonStyle(SigningButtonStyle(kind: .primary))
+                    }
+                    Button(issue.isToolchain ? "检查并恢复" : "立即重试") { model.launch(issue.isToolchain ? "check" : "renew") }
+                        .buttonStyle(SigningButtonStyle(kind: .text, compact: true)).disabled(model.running || (paused && !issue.isToolchain))
+                }
+            } else {
+                Button { model.launch("renew") } label: { Label("立即续签", systemImage: "arrow.clockwise") }
+                    .buttonStyle(SigningButtonStyle(kind: .primary)).disabled(!model.canRenew)
+                    .keyboardShortcut("r", modifiers: .command)
+            }
         }.frame(maxWidth: .infinity, alignment: .leading).signingCard(padding: 24)
     }
 
     private var nextDescription: String? {
         if model.running { return model.state.activity }
         if paused { return nil }
+        if let issue = model.actionRequired { return issue.guidance }
         guard let due = enabled.map(\.nextDue).min() else { return nil }
         return due <= Date() ? "等待执行" : "下次续签  \(dateText(due))"
     }

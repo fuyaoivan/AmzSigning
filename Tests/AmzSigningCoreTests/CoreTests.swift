@@ -280,14 +280,26 @@ final class CoreTests: XCTestCase {
         XCTAssertFalse(runner.calls.contains { $0.contains("install") })
         XCTAssertFalse(runner.calls.contains { $0.contains("uninstall") })
     }
-    func testWirelessSetupOnlyAppliesToAlreadyPairedUSBDevice() throws {
-        let runner = FakeRunner(); let manager = DeviceManager(runner: runner, paths: paths)
-        try manager.prepareWireless(testDevice)
-        var device = testDevice; device.transport = "wired"; device.paired = false
-        try manager.prepareWireless(device)
-        XCTAssertTrue(runner.calls.isEmpty)
-        device.paired = true; try manager.prepareWireless(device)
-        XCTAssertEqual(runner.calls, [["/usr/bin/xcrun", "xcdevice", "enable", "--timeout=15", device.udid]])
+    func testOverwriteInstallationUsesCoreDeviceForUSBAndWireless() throws {
+        for transport in ["wired", "localNetwork"] {
+            var device = testDevice; device.transport = transport
+            let runner = FakeRunner()
+            runner.handler = { _, args in
+                let installing = args.contains("install")
+                let result: [String: Any] = installing ? ["installedApplications": [["bundleID": "org.example.Sample"]]] :
+                    ["apps": [["bundleIdentifier": "org.example.Sample", "version": "1.0", "bundleVersion": "1"]]]
+                let path = args[args.firstIndex(of: "--json-output")! + 1]
+                try JSONSerialization.data(withJSONObject: ["info": ["outcome": "success"], "result": result])
+                    .write(to: URL(fileURLWithPath: path))
+                return CommandOutput(status: 0, data: Data())
+            }
+            try DeviceManager(runner: runner, paths: paths).install(appURL: temporary.appendingPathComponent("Sample.app"),
+                bundleID: "org.example.Sample", device: device)
+            XCTAssertEqual(runner.calls.count, 3)
+            XCTAssertTrue(runner.calls.allSatisfy { $0[1] == "devicectl" && $0.contains(device.id) })
+            XCTAssertEqual(runner.calls.filter { $0.contains("install") }.count, 1)
+            XCTAssertFalse(runner.calls.flatMap { $0 }.contains("uninstall"))
+        }
     }
     func testExplicitReenableAcceptsIdentityChangeWithoutClearingOtherGuards() {
         var p = project(); p.bundleID = "com.test.NewID"

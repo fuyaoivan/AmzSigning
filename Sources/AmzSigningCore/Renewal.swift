@@ -46,7 +46,6 @@ public final class XcodeRenewer: Renewing {
         try checkEnabled(project, store: store)
         try store.activity("\(project.name)：检查 iPhone 连接与已有 App")
         let (device, installed) = try devices.select(project: project)
-        if project.boundDeviceID == nil { try devices.prepareWireless(device) }
         // Bind before building, so a failure never silently redirects a retry to another phone.
         try store.updateProject(project.id, managementID: project.managementID) { $0.boundDeviceID = device.udid; $0.deviceName = device.name }
         let directory = paths.builds.appendingPathComponent("renew-\(project.id)", isDirectory: true)
@@ -144,7 +143,7 @@ public final class RenewalEngine {
             let attempt = now()
             // Persist a retry deadline BEFORE side effects, including crash/interruption cases.
             try store.updateProject(project.id, managementID: project.managementID) {
-                $0.lastAttempt = attempt; $0.nextRetry = attempt.addingTimeInterval(Timing.retry)
+                $0.lastAttempt = attempt; $0.nextRetry = attempt.addingTimeInterval(Timing.retry); $0.retryIssue = nil
                 $0.lastResult = "本次执行未完成；若意外中断，将在 6 小时后重试"
             }
             do {
@@ -156,7 +155,14 @@ public final class RenewalEngine {
                 result.successCount += 1; result.messages.append("\(project.name)：覆盖安装成功，到期 \(dateText(receipt.expiration))")
             } catch {
                 let message = String(error.localizedDescription.prefix(5000))
-                try store.updateProject(project.id, managementID: project.managementID) { $0.recordFailure(message, at: now()) }
+                let issue = (error as? SetupRequired)?.issue ?? SetupIssue.classify(message)
+                try store.updateProject(project.id, managementID: project.managementID) { $0.recordFailure(message, at: now(), issue: issue) }
+                if let issue {
+                    try store.update {
+                        if $0.notice?.issue != issue { $0.notice = UserNotice(issue: issue) }
+                        if issue.isToolchain { $0.toolchain = nil }
+                    }
+                }
                 result.failureCount += 1; result.messages.append("\(project.name)：\(message)")
             }
             // Keep completed per-project results even if a later project crashes.
@@ -164,6 +170,9 @@ public final class RenewalEngine {
             try store.update {
                 $0.recentRuns.removeAll { $0.id == result.id }; $0.recentRuns.insert(result, at: 0)
                 $0.recentRuns = Array($0.recentRuns.prefix(Maintenance.logCount))
+                if $0.toolchain?.issue == nil && !$0.projects.contains(where: { $0.enabled && $0.retryIssue != nil }) {
+                    $0.notice = nil
+                }
             }
         }
         return result

@@ -6,11 +6,12 @@ public struct Device: Equatable {
     public var name: String
     public var transport: String
     public var paired: Bool
-    public var developerMode: Bool
+    public var developerMode: Bool?
+    public var physical: Bool?
     public var transportTitle: String { transport == "wired" ? "USB" : transport == "localNetwork" || transport == "network" || transport == "wireless" ? "Wi-Fi" : transport }
-    public init(id: String, udid: String, name: String, transport: String, paired: Bool = true, developerMode: Bool = true) {
+    public init(id: String, udid: String, name: String, transport: String, paired: Bool = true, developerMode: Bool? = true, physical: Bool? = true) {
         self.id = id; self.udid = udid; self.name = name; self.transport = transport
-        self.paired = paired; self.developerMode = developerMode
+        self.paired = paired; self.developerMode = developerMode; self.physical = physical
     }
 }
 
@@ -36,23 +37,47 @@ public final class DeviceManager {
     }
     public static func parseDevices(_ result: [String: Any]) -> [Device] {
         (result["devices"] as? [[String: Any]] ?? []).compactMap { row in
-            let hardware = row["hardwareProperties"] as? [String: Any] ?? [:]
-            let connection = row["connectionProperties"] as? [String: Any] ?? [:]
-            let properties = row["deviceProperties"] as? [String: Any] ?? [:]
-            guard hardware["deviceType"] as? String == "iPhone", hardware["reality"] as? String == "physical",
+            let modern = row["properties"] as? [String: Any] ?? [:]
+            func properties(_ key: String, legacy: String) -> [String: Any] {
+                (row[legacy] as? [String: Any] ?? [:]).merging(modern[key] as? [String: Any] ?? [:]) { _, current in current }
+            }
+            let hardware = properties("hardware", legacy: "hardwareProperties")
+            let connection = properties("connection", legacy: "connectionProperties")
+            let state = properties("state", legacy: "deviceProperties")
+            let reality = hardware["reality"] as? String
+            let transport = connection["transportType"] as? String ?? "未知连接"
+            guard hardware["deviceType"] as? String == "iPhone", reality != "simulated", transport != "sameMachine",
                   let id = row["identifier"] as? String, let udid = hardware["udid"] as? String else { return nil }
-            return Device(id: id, udid: udid, name: (properties["name"] as? String ?? "iPhone").trimmingCharacters(in: .whitespaces),
-                transport: connection["transportType"] as? String ?? "未知连接",
-                paired: connection["pairingState"] as? String == "paired",
-                developerMode: properties["developerModeStatus"] as? String == "enabled")
+            let mode: Bool?
+            if let value = state["developerModeStatus"] as? String {
+                mode = value == "enabled" ? true : value == "disabled" ? false : nil
+            } else if let value = state["developerModeStatus"] as? [String: Any] {
+                mode = value["enabled"] != nil ? true : value["disabled"] != nil ? false : nil
+            } else { mode = nil }
+            return Device(id: id, udid: udid, name: (state["name"] as? String ?? "iPhone").trimmingCharacters(in: .whitespaces),
+                transport: transport, paired: connection["pairingState"] as? String == "paired", developerMode: mode,
+                physical: reality == "physical" ? true : nil)
         }
     }
-    public func list() throws -> [Device] { Self.parseDevices(try command(["list", "devices"])) }
-    public func prepareWireless(_ device: Device) throws {
-        guard device.paired, device.transport == "wired" else { return }
-        // Apple-supported setup for an already trusted device and this Mac only.
-        try runner.checked("/usr/bin/xcrun", ["xcdevice", "enable", "--timeout=15", device.udid], timeout: 18)
+    /// Newer device lists are intentionally partial. Unknown values must be resolved
+    /// from details before treating a device as physical and ready for installation.
+    public func confirmed(_ candidate: Device) throws -> Device {
+        var device = candidate
+        if candidate.physical == nil || candidate.developerMode == nil {
+            let details = try command(["device", "info", "details", "--device", candidate.id])
+            guard let full = Self.parseDevices(["devices": [details]]).first,
+                  full.id == candidate.id, full.udid == candidate.udid else {
+                throw AmzError("设备详情与目标 iPhone 不一致，已停止安装")
+            }
+            device = full
+        }
+        guard device.physical == true else { throw AmzError("尚未确认目标为真实 iPhone，已停止安装") }
+        guard device.paired else { throw SetupRequired(.deviceTrust) }
+        guard let enabled = device.developerMode else { throw AmzError("尚未获取完整的 iPhone 开发状态，请检查设备连接") }
+        guard enabled else { throw SetupRequired(.developerMode) }
+        return device
     }
+    public func list() throws -> [Device] { Self.parseDevices(try command(["list", "devices"])) }
     public func app(bundleID: String, device: Device) throws -> InstalledApp? {
         let result = try command(["device", "info", "apps", "--device", device.id, "--bundle-id", bundleID])
         return (result["apps"] as? [[String: Any]] ?? []).first(where: { $0["bundleIdentifier"] as? String == bundleID }).map {
@@ -60,22 +85,29 @@ public final class DeviceManager {
         }
     }
     public func select(project: Project) throws -> (Device, InstalledApp) {
-        let devices = try list().filter { $0.paired }
+        let discovered = try list()
+        let devices = discovered.filter { $0.paired }
         if let bound = project.boundDeviceID {
-            guard let device = devices.first(where: { $0.udid == bound }) else { throw AmzError("已绑定 iPhone 不在线；6 小时后重试") }
-            guard device.developerMode else { throw AmzError("iPhone 开发者模式不可用") }
+            guard let candidate = discovered.first(where: { $0.udid == bound }) else { throw AmzError("已绑定 iPhone 不在线；6 小时后重试") }
+            let device = try confirmed(candidate)
             guard let app = try app(bundleID: project.bundleID, device: device) else { throw AmzError("iPhone 上不存在此 App；仅允许覆盖安装，已停止") }
             return (device, app)
         }
+        if devices.isEmpty, !discovered.isEmpty { throw SetupRequired(.deviceTrust) }
         guard !devices.isEmpty else { throw AmzError("未发现已配对的 iPhone，请检查同一 Wi-Fi 或首次设备信任") }
         var matches: [(Device, InstalledApp)] = []
         var failures: [String] = []
+        var setupIssue: SetupIssue?
         for device in devices {
             do {
-                guard device.developerMode else { failures.append("\(device.name)：开发者模式不可用"); continue }
+                let device = try confirmed(device)
                 if let app = try app(bundleID: project.bundleID, device: device) { matches.append((device, app)) }
-            } catch { failures.append("\(device.name)：\(error.localizedDescription)") }
+            } catch {
+                if let required = error as? SetupRequired { setupIssue = required.issue }
+                failures.append("\(device.name)：\(error.localizedDescription)")
+            }
         }
+        if let setupIssue { throw SetupRequired(setupIssue) }
         guard failures.isEmpty else { throw AmzError(failures.joined(separator: "\n")) }
         guard matches.count == 1 else {
             throw AmzError(matches.isEmpty ? "已配对 iPhone 上未找到此 App；仅允许覆盖安装" : "多台 iPhone 装有此 App；首次续签时请只连接目标 iPhone")
@@ -83,6 +115,7 @@ public final class DeviceManager {
         return matches[0]
     }
     public func install(appURL: URL, bundleID: String, device: Device) throws {
+        guard device.physical == true, device.developerMode == true, device.paired else { throw AmzError("设备状态未验证，已停止安装") }
         // Recheck immediately before installation. There is deliberately no uninstall API.
         guard try app(bundleID: bundleID, device: device) != nil else { throw AmzError("安装前检查发现原 App 不存在，已停止") }
         let result = try command(["device", "install", "app", "--device", device.id, appURL.path], timeout: 120)

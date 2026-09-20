@@ -39,6 +39,7 @@ public struct Project: Codable, Identifiable, Equatable {
     public var lastSuccess: Date?
     public var lastAttempt: Date?
     public var nextRetry: Date?
+    public var retryIssue: SetupIssue?
     public var lastResult: String?
 
     public init(container: String, scheme: String, target: String, bundleID: String,
@@ -60,16 +61,16 @@ public struct Project: Codable, Identifiable, Equatable {
         enabled = value
         if value {
             approvedBundleID = bundleID; approvedTeamID = teamID
-            nextRetry = nil
+            nextRetry = nil; retryIssue = nil
             if issue?.hasPrefix("Bundle ID 或 Team 已改变") == true { issue = nil }
         }
     }
-    public mutating func recordFailure(_ message: String, at date: Date) {
-        lastResult = message; nextRetry = date.addingTimeInterval(Timing.retry)
+    public mutating func recordFailure(_ message: String, at date: Date, issue: SetupIssue? = nil) {
+        lastResult = message; nextRetry = date.addingTimeInterval(Timing.retry); retryIssue = issue
     }
     public mutating func recordSuccess(expiration: Date, profile: String, at date: Date,
                                        device: Device) {
-        lastSuccess = date; nextRetry = nil; installedExpiration = expiration
+        lastSuccess = date; nextRetry = nil; retryIssue = nil; installedExpiration = expiration
         localExpiration = expiration; profileUUID = profile
         boundDeviceID = device.udid; deviceName = device.name; lastTransport = device.transport
         lastResult = "已重新签名并覆盖安装 · \(device.name) · \(device.transportTitle)"
@@ -98,10 +99,12 @@ public struct State: Codable {
     public var recentRuns: [RunResult] = []
     public var activity: String?
     public var activityPID: Int32?
+    public var toolchain: ToolchainHealth?
+    public var notice: UserNotice?
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case version, projects, mode, lastScan, pendingScan, scanIssues, recentRuns, activity, activityPID
+        case version, projects, mode, lastScan, pendingScan, scanIssues, recentRuns, activity, activityPID, toolchain, notice
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -130,7 +133,10 @@ public struct State: Codable {
         recentRuns = try values.decodeIfPresent([RunResult].self, forKey: .recentRuns) ?? []
         activity = try values.decodeIfPresent(String.self, forKey: .activity)
         activityPID = try values.decodeIfPresent(Int32.self, forKey: .activityPID)
+        toolchain = try values.decodeIfPresent(ToolchainHealth.self, forKey: .toolchain)
+        notice = try values.decodeIfPresent(UserNotice.self, forKey: .notice)
     }
+    public var needsToolchain: Bool { pendingScan != nil || (mode == .automatic && projects.contains(where: \.enabled)) }
     public func manages(_ project: Project) -> Bool {
         projects.contains { $0.id == project.id && $0.managementID == project.managementID }
     }

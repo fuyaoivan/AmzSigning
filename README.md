@@ -54,9 +54,31 @@
 
 “立即续签”对已启用项目立即执行，仍遵守当前模式和安装校验。模式切换或移除项目会在后续安装检查点阻止旧任务；已提交给设备的安装不能撤回。
 
-当前用户的 LaunchAgent 使用 `RunAtLoad` 和分钟级 `StartCalendarInterval`。用户登录后补查，睡眠期间错过的日历事件由 macOS 在唤醒后合并触发。每次执行先检查状态与资源保留期限；无显式扫描请求或到期项目时立即退出，不连接设备或遍历项目目录。没有 `KeepAlive` 或常驻菜单栏进程，关闭最后一个设置窗口后应用退出。
+当前用户的 LaunchAgent 使用 `RunAtLoad` 和分钟级 `StartCalendarInterval`。用户登录后补查，睡眠期间错过的日历事件由 macOS 在唤醒后合并触发。每次执行先检查状态与资源保留期限；根据缓存及更新状态完成必要的只读环境检查；无显式扫描请求或到期项目时退出，不连接设备或遍历项目目录。没有 `KeepAlive` 或常驻菜单栏进程，关闭最后一个设置窗口后应用退出。
 
-设备通过 Apple `devicectl` 连接。同一可互通网络支持无线连接，也支持 USB。首次续签绑定唯一匹配的已配对 iPhone，重试不会自动换机。已信任 USB 设备可通过 `xcdevice enable` 启用当前 Mac 的无线调试。Mac 关机、设备离线或 Apple 签名服务不可用时无法完成续签。
+设备通过 Apple `devicectl` 连接。同一可互通网络支持无线连接，也支持 USB。首次续签绑定唯一匹配的已配对 iPhone，重试不会自动换机。首次无线连接在 Xcode 的设备管理界面完成配对；已配对设备通过 CoreDevice 自动选择可用连接，不依赖旧版 `xcdevice enable`。Mac 关机、设备离线或 Apple 签名服务不可用时无法完成续签。
+
+## 更新后的运行环境检查
+
+自动模式下，有已启用项目时会检查当前开发工具路径和系统、Xcode、许可状态文件的变化。优先使用系统选定的完整 Xcode；选中 Command Line Tools 或原路径失效时，查找已安装的完整 Xcode，通过本次进程的 `DEVELOPER_DIR` 使用，不修改系统选择或项目配置。
+
+检查使用 `xcodebuild -version`、`-checkFirstLaunchStatus`、iPhone SDK 定位和 `devicectl` 定位命令。健康结果缓存 6 小时；系统或工具标识变化立即重新检查，实际续签前也复检。阻塞期间每 5 分钟执行只读环境检查，不启动构建或连接 iPhone。许可状态变化可提前触发复检。
+
+| 更新后的状态 | 处理方式 |
+| --- | --- |
+| 工具路径变化 | 自动定位完整 Xcode，并统一传给本次全部子进程 |
+| 新许可尚未确认 | 显示具体原因并通知使用者，等待本人阅读、确认 |
+| 首次启动或平台组件未完成 | 提示在 Xcode 完成初始化或组件安装 |
+| 环境恢复 | 自动清除属于该环境问题的等待期限，补做已到期续签 |
+| 设备列表信息不完整 | 读取设备详情，核对原设备身份、真机类型、配对和开发者模式 |
+| 更新后设备锁定 | 提示解锁目标 iPhone，完成首次开发镜像准备后重试 |
+| Apple 登录、设备信任或开发者模式失效 | 给出对应操作提示，保持覆盖安装限制及失败重试规则 |
+
+环境阻塞独立于项目安装失败。离线、构建失败等普通错误仍按 6 小时重试，环境检查不会提前清除这些等待期限，也不会重置上次成功时间。升级旧配置时，已知的旧 Xcode 环境错误可在检查通过后恢复。
+
+设置窗口仅在环境检查与调度均正常时显示“自动续签已就绪”。需要本人处理时，显示原因及“打开 Xcode”“检查并恢复”操作。首次打开设置窗口会请求 macOS 通知授权；获准后同一持续问题只提醒一次。通知发送进程不创建设置窗口，发送完成即退出；拒绝通知不影响界面提示和续签逻辑。
+
+工具不会代替使用者接受协议、输入账号密码或取消设备安全要求。完成必要授权后可继续自动续签，无需保持 Xcode 图形界面打开。更新后的设备协议使用 Xcode 27 的 `properties` 结构，同时兼容旧字段；缺失字段表示状态未知，不能作为开发者模式关闭或设备不存在的依据。
 
 ## 覆盖安装与签名校验
 
@@ -105,13 +127,15 @@ macOS 要求在 `~/Library/LaunchAgents/org.amzsigning.agent.plist` 注册登录
 
 ```sh
 swift test --cache-path .build/Cache --manifest-cache local
-.build/debug/AmzSigningAgent status
-.build/debug/AmzSigningAgent scan /path/to/projects
-.build/debug/AmzSigningAgent tick
-.build/debug/AmzSigningAgent renew
+amz_bin="$(swift build --show-bin-path)"
+"$amz_bin/AmzSigningAgent" status
+"$amz_bin/AmzSigningAgent" check
+"$amz_bin/AmzSigningAgent" scan /path/to/projects
+"$amz_bin/AmzSigningAgent" tick
+"$amz_bin/AmzSigningAgent" renew
 ```
 
-`scan` 可指定多个目录，仅执行扫描；无参数时处理已经提交的扫描请求。`renew` 可附加项目 ID。`tick` 处理显式请求和到期项目。调试执行程序的数据位于源码根目录的 `Data/`，与正式安装共享；开发验证应使用测试提供的隔离 `Paths`。
+`scan` 可指定多个目录，仅执行扫描；无参数时处理已经提交的扫描请求。`renew` 可附加项目 ID。`tick` 处理环境检查、显式请求和到期项目；`check` 强制检查环境，并在自动模式下恢复已到期项目。调试执行程序的数据位于源码根目录的 `Data/`，与正式安装共享；开发验证应使用测试提供的隔离 `Paths`。
 
 | 模块 | 职责 |
 | --- | --- |
@@ -120,6 +144,13 @@ swift test --cache-path .build/Cache --manifest-cache local
 | `AmzSigning` | SwiftUI 设置界面与状态同步 |
 | `BrandArtwork.swift` | 图标和窗口标识共用的矢量源与品牌色 |
 
-状态格式 v2 自动迁移 v1 项目记录，保留开关、身份、设备和成功时间。旧扫描范围与预设项目逻辑不再使用；旧自动模式迁移为自动模式，其余暂停状态迁移为离开模式。
+运行环境和通知使用 v2 状态中的可选字段，兼容已有 v2 配置。状态格式 v2 自动迁移 v1 项目记录，保留开关、身份、设备和成功时间。旧扫描范围与预设项目逻辑不再使用；旧自动模式迁移为自动模式，其余暂停状态迁移为离开模式。
 
 版本由 `Resources/Info.plist` 统一提供。初始基线为 v1.0.0，修复递增 Patch，兼容新功能递增 Minor；`CFBundleVersion` 单独递增。详见 [版本记录](CHANGELOG.md) 和 [验证说明](docs/verification.md)。
+
+## Apple 技术参考
+
+- [安装 Xcode 组件与设备支持更新](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components)
+- [设备配对与无线连接](https://developer.apple.com/documentation/xcode/pairing-your-devices-with-your-mac)
+- [设备开发者模式](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
+- 当前 Xcode 随附的 `xcodebuild(1)` 手册和 `xcrun devicectl help device info details`。

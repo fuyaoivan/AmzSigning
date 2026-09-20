@@ -117,7 +117,7 @@ public final class XcodeScanner: ProjectScanning {
                 p.managementID = old.managementID
                 p.enabled = old.enabled; p.approvedBundleID = old.approvedBundleID; p.approvedTeamID = old.approvedTeamID
                 p.boundDeviceID = old.boundDeviceID; p.deviceName = old.deviceName; p.lastTransport = old.lastTransport
-                p.lastSuccess = old.lastSuccess; p.lastAttempt = old.lastAttempt; p.nextRetry = old.nextRetry
+                p.lastSuccess = old.lastSuccess; p.lastAttempt = old.lastAttempt; p.nextRetry = old.nextRetry; p.retryIssue = old.retryIssue
                 p.installedExpiration = old.installedExpiration; p.profileUUID = old.profileUUID; p.lastResult = old.lastResult
                 if old.approvedBundleID != nil && (old.approvedBundleID != p.bundleID || old.approvedTeamID != p.teamID) {
                     p.issue = "Bundle ID 或 Team 已改变；需关闭后重新开启此项目"
