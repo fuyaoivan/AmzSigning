@@ -48,8 +48,13 @@ import Darwin
         catch { self.error = error.localizedDescription }
     }
     func change(_ mutation: (inout AmzSigningCore.State) -> Void) {
-        do { if let store { state = try store.update(mutation) } }
-        catch { self.error = error.localizedDescription }
+        do {
+            guard let store else { return }
+            state = try store.update { state in
+                mutation(&state)
+                if let notice = state.notice, !state.requiresAction(notice.issue) { state.notice = nil }
+            }
+        } catch { self.error = error.localizedDescription }
     }
     func toggle(_ project: Project, enabled: Bool) {
         change { state in
@@ -68,6 +73,9 @@ import Darwin
         }
         let app = URL(fileURLWithPath: path).deletingLastPathComponent().deletingLastPathComponent()
         NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration())
+    }
+    func openNotificationSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") { NSWorkspace.shared.open(url) }
     }
     func scanProjects() {
         let panel = NSOpenPanel()

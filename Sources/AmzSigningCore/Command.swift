@@ -95,8 +95,9 @@ extension CommandRunning {
     @discardableResult public func checked(_ executable: String, _ arguments: [String], timeout: TimeInterval = 30) throws -> CommandOutput {
         let output = try run(executable, arguments, timeout: timeout)
         guard output.status == 0 else {
-            if ["/usr/bin/xcodebuild", "/usr/bin/xcrun"].contains(executable), let issue = SetupIssue.classify(output.text) {
-                throw SetupRequired(issue)
+            if ["/usr/bin/xcodebuild", "/usr/bin/xcrun"].contains(executable) {
+                if let issue = SetupIssue.classify(output.text) { throw SetupRequired(issue) }
+                if let message = CommandDiagnostics.retryMessage(output.text) { throw AmzError(message) }
             }
             throw AmzError("\(URL(fileURLWithPath: executable).lastPathComponent) 执行失败（\(output.status)）\n" + String(output.text.suffix(4000)))
         }

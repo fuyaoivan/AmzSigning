@@ -4,19 +4,15 @@ import Darwin
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 let command = arguments.first ?? "tick"
-let permitted = ["tick", "check", "scan", "renew", "status", "install-agent"]
+let permitted = ["tick", "check", "scan", "renew", "retry", "status", "install-agent"]
 guard permitted.contains(command) else {
-    print("用法：AmzSigningAgent [tick|check|scan [directory ...]|renew [project-id]|status|install-agent]")
+    print("用法：AmzSigningAgent [tick|check|scan [directory ...]|renew [project-id]|retry|status|install-agent]")
     exit(64)
 }
 
 func deliverNotice(store: StateStore, runner: CommandRunning) throws {
-    guard let notice = try store.read().notice, !notice.attempted else { return }
     let application = store.paths.base.deletingLastPathComponent().appendingPathComponent("AmzSigning.app/Contents/MacOS/AmzSigning")
-    guard FileManager.default.isExecutableFile(atPath: application.path) else { return }
-    // Claim before launching so a killed process cannot create a notification loop.
-    try store.update { if $0.notice?.id == notice.id { $0.notice?.attempted = true } }
-    _ = try? runner.run(application.path, ["--notify", notice.id], timeout: 15)
+    try NoticeDelivery(store: store).dispatch(runner: runner, application: application)
 }
 
 do {
@@ -46,12 +42,12 @@ do {
         guard state.needsToolchain || command == "check" else { return }
         let renewDue = state.projects.contains { state.eligible($0, at: Date()) }
         let checker = XcodeToolchain(runner: runner) { runner.developerDirectory = $0 }
-        let force = command == "check" || command == "renew" || command == "scan" || ((state.pendingScan != nil || renewDue) && state.toolchain?.issue == nil)
+        let force = command == "check" || command == "renew" || command == "retry" || command == "scan" || ((state.pendingScan != nil || renewDue) && state.toolchain?.issue == nil)
         let ready = try ToolchainMonitor(store: store, checker: checker).prepare(force: force)
         try deliverNotice(store: store, runner: runner)
         guard ready else { return }
         state = try store.read()
-        guard state.pendingScan != nil || command == "renew" || state.projects.contains(where: { state.eligible($0, at: Date()) }) else { return }
+        guard state.pendingScan != nil || command == "renew" || command == "retry" || state.projects.contains(where: { state.eligible($0, at: Date()) }) else { return }
         defer { try? store.activity(nil) }
         if state.pendingScan != nil {
             try store.activity("正在扫描 iPhone 项目")
@@ -65,7 +61,7 @@ do {
         let log = paths.logs.appendingPathComponent("\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8)).log")
         runner.logURL = log
         let engine = RenewalEngine(store: store, renewer: XcodeRenewer(runner: runner, paths: paths))
-        let result = try engine.execute(force: command == "renew", projectID: command == "renew" && arguments.count > 1 ? arguments[1] : nil, logPath: log.path)
+        let result = try engine.execute(force: command == "renew" || command == "retry", projectID: command == "renew" && arguments.count > 1 ? arguments[1] : nil, logPath: log.path, failedOnly: command == "retry")
         try deliverNotice(store: store, runner: runner)
         if let result { print(result.messages.joined(separator: "\n")) }
     }

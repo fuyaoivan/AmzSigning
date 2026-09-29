@@ -129,17 +129,17 @@ public final class RenewalEngine {
     public let renewer: Renewing
     public init(store: StateStore, renewer: Renewing) { self.store = store; self.renewer = renewer }
     /// The caller owns the worker lock. Every state write merges the latest UI settings.
-    public func execute(force: Bool, projectID: String? = nil, logPath: String? = nil, now: () -> Date = Date.init) throws -> RunResult? {
+    public func execute(force: Bool, projectID: String? = nil, logPath: String? = nil, failedOnly: Bool = false, now: () -> Date = Date.init) throws -> RunResult? {
         let state = try store.read()
         guard state.mode == .automatic else { return nil }
-        let projects = state.projects.filter { (projectID == nil || $0.id == projectID) && state.eligible($0, at: now(), force: force) }
+        let projects = state.projects.filter { (projectID == nil || $0.id == projectID) && state.eligible($0, at: now(), force: force) && (!failedOnly || $0.nextRetry != nil) }
         guard !projects.isEmpty else { return nil }
-        var result = RunResult(trigger: force ? "立即续签" : "自动续签")
+        var result = RunResult(trigger: failedOnly ? "重试失败项目" : force ? "立即续签" : "自动续签")
         result.logPath = logPath
         defer { try? store.activity(nil) }
         for original in projects {
             let latest = try store.read()
-            guard let project = latest.projects.first(where: { $0.id == original.id && $0.managementID == original.managementID }), latest.eligible(project, at: now(), force: force) else { continue }
+            guard let project = latest.projects.first(where: { $0.id == original.id && $0.managementID == original.managementID }), latest.eligible(project, at: now(), force: force), !failedOnly || project.nextRetry != nil else { continue }
             let attempt = now()
             // Persist a retry deadline BEFORE side effects, including crash/interruption cases.
             try store.updateProject(project.id, managementID: project.managementID) {

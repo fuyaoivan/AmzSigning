@@ -101,10 +101,11 @@ public struct State: Codable {
     public var activityPID: Int32?
     public var toolchain: ToolchainHealth?
     public var notice: UserNotice?
+    public var notificationPermission: NotificationPermission?
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case version, projects, mode, lastScan, pendingScan, scanIssues, recentRuns, activity, activityPID, toolchain, notice
+        case version, projects, mode, lastScan, pendingScan, scanIssues, recentRuns, activity, activityPID, toolchain, notice, notificationPermission
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -135,6 +136,10 @@ public struct State: Codable {
         activityPID = try values.decodeIfPresent(Int32.self, forKey: .activityPID)
         toolchain = try values.decodeIfPresent(ToolchainHealth.self, forKey: .toolchain)
         notice = try values.decodeIfPresent(UserNotice.self, forKey: .notice)
+        notificationPermission = try values.decodeIfPresent(NotificationPermission.self, forKey: .notificationPermission)
+    }
+    public func requiresAction(_ issue: SetupIssue) -> Bool {
+        toolchain?.issue == issue || projects.contains { $0.enabled && $0.retryIssue == issue }
     }
     public var needsToolchain: Bool { pendingScan != nil || (mode == .automatic && projects.contains(where: \.enabled)) }
     public func manages(_ project: Project) -> Bool {

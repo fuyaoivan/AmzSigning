@@ -1,11 +1,20 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
-        Task { @MainActor in await SigningNotifications.requestPermission() }
+        UNUserNotificationCenter.current().delegate = self
+        Task { @MainActor in await SigningNotifications.refreshAuthorization(requestIfNeeded: true) }
+    }
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task { @MainActor in await SigningNotifications.refreshAuthorization() }
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list, .sound])
     }
 }
 

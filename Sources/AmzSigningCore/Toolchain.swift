@@ -40,7 +40,7 @@ public enum SetupIssue: String, Codable, Equatable {
         }
     }
     public static func classify(_ message: String) -> SetupIssue? {
-        let text = message.lowercased()
+        let text = CommandDiagnostics.failureText(message).lowercased()
         if text.contains("license") && (text.contains("not agreed") || text.contains("requires acceptance") || text.contains("agree to")) { return .license }
         if text.contains("runfirstlaunch") || text.contains("first launch tasks") { return .firstLaunch }
         if text.contains("invalid active developer path") || text.contains("requires xcode") { return .xcodeMissing }
@@ -49,7 +49,12 @@ public enum SetupIssue: String, Codable, Equatable {
         if text.contains("not paired") || text.contains("pairing is required") || text.contains("not trusted") { return .deviceTrust }
         if text.contains("device is currently locked") || text.contains("device was still locked") || text.contains("unlock the device") { return .deviceLocked }
         if text.contains("failed to prepare device for development") || text.contains("could not locate device support files") || text.contains("developer disk image could not be mounted") { return .deviceSupport }
-        if text.contains("authentication credentials") || text.contains("session has expired") || text.contains("no accounts") || text.contains("unable to log in with account") { return .account }
+        if text.contains("no accounts:") || text.contains("no accounts available") { return .account }
+        // Login service transport failures do not prove that credentials are invalid.
+        if CommandDiagnostics.isNetworkFailure(text) { return nil }
+        if text.contains("authentication credentials are missing or invalid") || text.contains("session has expired") ||
+            text.contains("incorrect password") ||
+            text.contains("authentication failed") { return .account }
         return nil
     }
 }
@@ -74,13 +79,6 @@ public struct ToolchainHealth: Codable, Equatable {
     public var checkedAt: Date
     public var issue: SetupIssue?
     public var nextCheck: Date { checkedAt.addingTimeInterval(issue == nil ? Timing.retry : 5 * 60) }
-}
-
-public struct UserNotice: Codable, Equatable {
-    public var id = UUID().uuidString
-    public var issue: SetupIssue
-    public var attempted = false
-    public init(issue: SetupIssue) { self.issue = issue }
 }
 
 public protocol ToolchainChecking {

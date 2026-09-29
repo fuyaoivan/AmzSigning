@@ -131,7 +131,7 @@ struct SettingsView: View {
 
     private var renewalTitle: String {
         if paused { return model.state.mode.title }
-        if let issue = model.actionRequired { return issue.title }
+        if !model.running, let issue = model.actionRequired { return issue.title }
         return enabled.isEmpty ? "未启用项目" : "\(enabled.count) 个项目已启用"
     }
 
@@ -148,12 +148,12 @@ struct SettingsView: View {
             }
             Spacer(minLength: 0)
             if model.running { ProgressView().controlSize(.small) }
-            if let issue = model.actionRequired {
+            if !model.running, let issue = model.actionRequired {
                 VStack(spacing: 6) {
                     if issue.isToolchain || issue == .account || issue == .deviceSupport {
                         Button("打开 Xcode") { model.openXcode() }.buttonStyle(SigningButtonStyle(kind: .primary))
                     }
-                    Button(issue.isToolchain ? "检查并恢复" : "立即重试") { model.launch(issue.isToolchain ? "check" : "renew") }
+                    Button(issue.isToolchain ? "检查并恢复" : "立即重试") { model.launch(issue.isToolchain ? "check" : "retry") }
                         .buttonStyle(SigningButtonStyle(kind: .text, compact: true)).disabled(model.running || (paused && !issue.isToolchain))
                 }
             } else {
@@ -190,6 +190,13 @@ struct SettingsView: View {
                     modeButton(.away, title: "离开模式", symbol: "suitcase.rolling")
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).signingCard()
+            if model.state.notificationPermission != .allowed {
+                HStack {
+                    Label("问题提醒未开启", systemImage: "bell.slash").font(.system(size: 13)).foregroundStyle(SigningStyle.amber)
+                    Spacer()
+                    Button("通知设置") { model.openNotificationSettings() }.buttonStyle(SigningButtonStyle(kind: .text, compact: true))
+                }.signingCard()
+            }
         }
     }
 
