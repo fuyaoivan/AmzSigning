@@ -3,8 +3,20 @@ import Foundation
 /// Prefer terminal build diagnostics over unrelated account-manager warnings.
 public enum CommandDiagnostics {
     public static func failureText(_ output: String) -> String {
-        let errors = output.components(separatedBy: .newlines).filter {
-            $0.lowercased().contains(": error:")
+        var errors: [String] = []
+        var toolContext = false
+        for line in output.components(separatedBy: .newlines) {
+            let text = line.lowercased()
+            if text.contains(": error:") {
+                errors.append(line)
+                // xcodebuild puts destination-specific causes on indented continuation
+                // lines. Compiler source excerpts and unrelated account logs are not causes.
+                toolContext = text.trimmingCharacters(in: .whitespaces).hasPrefix("xcodebuild: error:")
+            } else if toolContext && (line.isEmpty || line.first?.isWhitespace == true) {
+                errors.append(line)
+            } else {
+                toolContext = false
+            }
         }
         return errors.isEmpty ? output : errors.joined(separator: "\n")
     }

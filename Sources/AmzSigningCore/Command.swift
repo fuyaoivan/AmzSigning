@@ -19,8 +19,19 @@ public final class CommandRunner: CommandRunning {
     private let paths: Paths
     public init(paths: Paths, logURL: URL? = nil) { self.paths = paths; self.logURL = logURL }
     public func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) throws -> CommandOutput {
-        let outputURL = paths.temporary.appendingPathComponent("amzsigning-\(UUID().uuidString).output")
-        defer { try? FileManager.default.removeItem(at: outputURL) }
+        // Own every invocation's output, TMPDIR and Xcode failure result bundle as
+        // one lifetime. Xcode may ignore TMPDIR for result bundles unless explicitly set.
+        let scratch = paths.temporary.appendingPathComponent("command-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let outputURL = scratch.appendingPathComponent("output")
+        var arguments = arguments
+        if executable == "/usr/bin/xcodebuild",
+           arguments.contains("-project") || arguments.contains("-workspace"),
+           !arguments.contains("-resultBundlePath") {
+            arguments += ["-resultBundlePath", scratch.appendingPathComponent("Result.xcresult").path]
+        }
         var actions: posix_spawn_file_actions_t?
         var attributes: posix_spawnattr_t?
         posix_spawn_file_actions_init(&actions); posix_spawnattr_init(&attributes)
@@ -33,7 +44,7 @@ public final class CommandRunner: CommandRunning {
         let argv = ([executable] + arguments).map { strdup($0) } + [nil]
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
-        environment["TMPDIR"] = paths.temporary.path + "/"
+        environment["TMPDIR"] = scratch.path + "/"
         environment["NSUnbufferedIO"] = "YES"
         environment["LC_ALL"] = "en_US.UTF-8"
         if let developerDirectory { environment["DEVELOPER_DIR"] = developerDirectory }
@@ -46,20 +57,21 @@ public final class CommandRunner: CommandRunning {
             }
         }
         guard result == 0 else { throw AmzError("无法启动 \(executable)：\(String(cString: strerror(result)))") }
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeout))
         var status: Int32 = 0
         var timedOut = false
         var excessiveOutput = false
-        var nextSizeCheck = ProcessInfo.processInfo.systemUptime + 2
+        var nextSizeCheck = clock.now.advanced(by: .seconds(2))
         while true {
             let waited = waitpid(pid, &status, WNOHANG)
             if waited == pid { break }
             if waited < 0 && errno != EINTR { throw AmzError("无法读取子进程状态") }
-            if ProcessInfo.processInfo.systemUptime >= nextSizeCheck {
+            if clock.now >= nextSizeCheck {
                 excessiveOutput = ((try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size]) as? NSNumber)?.intValue ?? 0 > 32 * 1024 * 1024
-                nextSizeCheck = ProcessInfo.processInfo.systemUptime + 2
+                nextSizeCheck = clock.now.advanced(by: .seconds(2))
             }
-            if ProcessInfo.processInfo.systemUptime >= deadline || excessiveOutput {
+            if clock.now >= deadline || excessiveOutput {
                 timedOut = true; kill(-pid, SIGTERM)
                 usleep(500_000); kill(-pid, SIGKILL)
                 while waitpid(pid, &status, 0) < 0 && errno == EINTR {}

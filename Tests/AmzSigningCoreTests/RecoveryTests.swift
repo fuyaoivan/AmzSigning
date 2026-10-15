@@ -54,6 +54,39 @@ final class RecoveryTests: XCTestCase {
         let output = "DVTDeveloperAccountManager: session has expired\n/Projects/Sample.swift:18:7: error: cannot find value in scope"
         XCTAssertNil(SetupIssue.classify(output))
     }
+    func testDestinationContinuationRetainsUnlockRequirement() throws {
+        let output = """
+        DVTDeveloperAccountManager: session has expired
+        xcodebuild: error: Timed out waiting for all destinations matching the provided destination specifier to become available
+
+            Destinations compatible with the "Sample" scheme:
+                { platform:iOS, id:example-device, error:Phone needs to be unlocked to enable development services Please unlock the device. }
+        """
+        XCTAssertEqual(SetupIssue.classify(output), .deviceLocked)
+        let runner = FakeRunner()
+        runner.handler = { _, _ in CommandOutput(status: 70, data: Data(output.utf8)) }
+        XCTAssertThrowsError(try runner.checked("/usr/bin/xcodebuild", ["build"])) {
+            XCTAssertEqual(($0 as? SetupRequired)?.issue, .deviceLocked)
+        }
+    }
+    func testUnrelatedAccountLogAfterDestinationBlockIsExcluded() {
+        let output = """
+        xcodebuild: error: Unable to find a destination matching the provided destination specifier
+
+            Available destinations: none
+        DVTDeveloperAccountManager: session has expired
+            authentication credentials are missing or invalid
+        """
+        XCTAssertNil(SetupIssue.classify(output))
+    }
+    func testCompilerSourceExcerptIsNotADeviceDiagnostic() {
+        let output = """
+        /Projects/Sample.swift:18:7: error: cannot find value in scope
+            showMessage("Please unlock the device")
+            ^~~~~~~~~~~
+        """
+        XCTAssertNil(SetupIssue.classify(output))
+    }
     func testDeviceAssertionFailureIsTransientNotARequestToChangeTrust() {
         let output = "ERROR: The device is not able to fulfill the requested usage assertion requirements. (com.apple.dt.CoreDeviceError error 4016 (0xFB0))"
         XCTAssertNil(SetupIssue.classify(output))

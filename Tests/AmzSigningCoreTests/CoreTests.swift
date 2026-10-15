@@ -309,6 +309,29 @@ final class CoreTests: XCTestCase {
         p.automatic = false
         XCTAssertThrowsError(try XcodeRenewer.validateIdentity(p))
     }
+    func testCommandWorkspaceIsPrivateAndRemovedForSuccessAndFailure() throws {
+        let runner = CommandRunner(paths: paths)
+        for status in [0, 7] {
+            let result = try runner.run("/bin/sh", ["-c", "printf '%s' \"$TMPDIR\"; mkdir \"$TMPDIR/child-cache\"; touch \"$TMPDIR/child-cache/item\"; exit \(status)"], timeout: 3)
+            XCTAssertEqual(result.status, Int32(status))
+            let scratch = URL(fileURLWithPath: result.text).standardizedFileURL
+            XCTAssertEqual(scratch.deletingLastPathComponent(), paths.temporary.standardizedFileURL)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: scratch.path))
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: paths.temporary.path).isEmpty)
+        }
+    }
+    func testInterruptedCommandWorkspaceIsReclaimedWithoutTouchingState() throws {
+        let scratch = paths.temporary.appendingPathComponent("command-interrupted")
+        let result = scratch.appendingPathComponent("Result.xcresult")
+        try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)
+        try Data("result".utf8).write(to: result.appendingPathComponent("Info.plist"))
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-3601)], ofItemAtPath: scratch.path)
+        try seed([project()])
+        let original = try Data(contentsOf: paths.state)
+        try Maintenance.clean(paths: paths, now: now)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: scratch.path))
+        XCTAssertEqual(try Data(contentsOf: paths.state), original)
+    }
     func testSubprocessTimeoutKillsItsChildrenAndReturnsPromptly() throws {
         let marker = temporary.appendingPathComponent("must-not-exist")
         let start = Date()
@@ -316,5 +339,6 @@ final class CoreTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.5)
         Thread.sleep(forTimeInterval: 2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: paths.temporary.path).isEmpty)
     }
 }
