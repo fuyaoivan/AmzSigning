@@ -6,6 +6,9 @@ import Darwin
 @MainActor final class SettingsModel: ObservableObject {
     @Published var state = AmzSigningCore.State()
     @Published var error: String?
+    @Published var loadingDevices = false
+    @Published var availableDevices: [Device] = []
+    @Published var deviceError: String?
     @Published var starting = false
     @Published var schedulerReady = false
     private(set) var store: StateStore?
@@ -16,7 +19,7 @@ import Darwin
         starting || (state.activityPID.map { kill($0, 0) == 0 } ?? false)
     }
     var actionRequired: SetupIssue? { state.toolchain?.issue ?? state.projects.first(where: { $0.enabled && $0.retryIssue != nil })?.retryIssue }
-    var canRenew: Bool { !running && state.mode == .automatic && state.projects.contains(where: \.enabled) }
+    var canRenew: Bool { !running && !loadingDevices && state.mode == .automatic && state.projects.contains(where: \.enabled) }
     init() {
         do {
             let store = try StateStore(); self.store = store
@@ -87,6 +90,30 @@ import Darwin
     }
     func removeProject(_ project: Project) {
         change { $0.removeProject(project) }
+    }
+    func discoverDevices() {
+        guard !loadingDevices, !running, let paths = store?.paths else { return }
+        loadingDevices = true; deviceError = nil; availableDevices = []
+        let executable = worker.path
+        Task {
+            do {
+                let devices = try await Task.detached {
+                    let result = try CommandRunner(paths: paths).checked(executable, ["devices"], timeout: 120)
+                    return try JSONDecoder.amz.decode([Device].self, from: result.data)
+                }.value
+                availableDevices = devices
+            } catch { deviceError = error.localizedDescription }
+            loadingDevices = false
+        }
+    }
+    func install(on device: Device, projects: [Project]) {
+        do {
+            let request = InstallationRequest(deviceUDID: device.udid, projects: projects)
+            guard let store else { return }
+            try request.validate(in: store.read())
+            let json = String(decoding: try JSONEncoder.amz.encode(request), as: UTF8.self)
+            launch("install-device", id: json)
+        } catch { self.error = error.localizedDescription }
     }
     func launch(_ command: String, id: String? = nil) {
         guard !running else { return }

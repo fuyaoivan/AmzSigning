@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Device: Equatable {
+public struct Device: Codable, Equatable, Identifiable {
     public var id: String
     public var udid: String
     public var name: String
@@ -15,11 +15,23 @@ public struct Device: Equatable {
     }
 }
 
+public enum InstallationPolicy { case overwriteExisting, allowFirstInstall }
+
 public struct InstalledApp: Equatable {
     public var bundleID: String
     public var version: String
     public var build: String
     public var url: String
+    public func validateReplacement(version: String, build: String) throws {
+        if !version.isEmpty, !self.version.isEmpty, version.compare(self.version, options: .numeric) == .orderedAscending {
+            throw AmzError("源码版本低于 iPhone 上的版本，已停止覆盖，避免数据格式回退")
+        }
+        if version == self.version, !build.isEmpty, !self.build.isEmpty,
+           build.compare(self.build, options: .numeric) == .orderedAscending {
+            throw AmzError("源码构建号低于 iPhone 上的构建号，已停止覆盖")
+        }
+    }
+
 }
 
 public final class DeviceManager {
@@ -84,6 +96,13 @@ public final class DeviceManager {
             InstalledApp(bundleID: bundleID, version: $0["version"] as? String ?? "", build: $0["bundleVersion"] as? String ?? "", url: $0["url"] as? String ?? "")
         }
     }
+    public func selected(udid: String) throws -> Device {
+        let matches = try list().filter { $0.udid == udid }
+        guard matches.count == 1, let candidate = matches.first else {
+            throw AmzError("所选 iPhone 不在线，请连接并解锁；不会改用其他设备")
+        }
+        return try confirmed(candidate)
+    }
     public func select(project: Project) throws -> (Device, InstalledApp) {
         let discovered = try list()
         let devices = discovered.filter { $0.paired }
@@ -114,10 +133,12 @@ public final class DeviceManager {
         }
         return matches[0]
     }
-    public func install(appURL: URL, bundleID: String, device: Device) throws {
+    public func install(appURL: URL, bundleID: String, device: Device, policy: InstallationPolicy = .overwriteExisting, version: String = "", build: String = "") throws {
         guard device.physical == true, device.developerMode == true, device.paired else { throw AmzError("设备状态未验证，已停止安装") }
         // Recheck immediately before installation. There is deliberately no uninstall API.
-        guard try app(bundleID: bundleID, device: device) != nil else { throw AmzError("安装前检查发现原 App 不存在，已停止") }
+        let existing = try app(bundleID: bundleID, device: device)
+        guard policy == .allowFirstInstall || existing != nil else { throw AmzError("安装前检查发现原 App 不存在，已停止") }
+        try existing?.validateReplacement(version: version, build: build)
         let result = try command(["device", "install", "app", "--device", device.id, appURL.path], timeout: 120)
         let apps = result["installedApplications"] as? [[String: Any]] ?? []
         guard apps.contains(where: { $0["bundleID"] as? String == bundleID || $0["bundleIdentifier"] as? String == bundleID }) else {

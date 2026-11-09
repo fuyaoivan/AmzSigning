@@ -33,10 +33,10 @@ public enum CommandDiagnostics {
     public static func retryMessage(_ output: String) -> String? {
         let text = failureText(output).lowercased()
         if isNetworkFailure(text) {
-            return "开发服务网络连接失败；6 小时后自动重试。"
+            return "开发服务网络连接失败。"
         }
         if text.contains("com.apple.dt.coredeviceerror error 4016") {
-            return "iPhone 开发连接暂不可用；请保持同一 Wi-Fi 或连接 USB，6 小时后自动重试。"
+            return "iPhone 开发连接暂不可用；请保持同一 Wi-Fi 或连接 USB。"
         }
         return nil
     }

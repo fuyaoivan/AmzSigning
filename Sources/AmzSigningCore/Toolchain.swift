@@ -30,7 +30,7 @@ public enum SetupIssue: String, Codable, Equatable {
         case .deviceTrust: return "连接并解锁目标 iPhone，完成设备信任与配对。"
         case .developerMode: return "在 iPhone 的隐私与安全性设置中启用开发者模式，并完成系统确认。"
         case .deviceSupport: return "使用支持当前 iOS 的 Xcode，并完成设备支持组件初始化。"
-        case .deviceLocked: return "解锁目标 iPhone，完成更新后的首次设备准备，再立即重试或等待自动重试。"
+        case .deviceLocked: return "解锁目标 iPhone，完成更新后的首次设备准备。"
         }
     }
     public var isToolchain: Bool {

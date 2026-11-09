@@ -72,6 +72,13 @@ public final class StateStore {
             try mutate(&state.projects[index])
         }
     }
+    public func recordRun(_ result: RunResult) throws {
+        try update {
+            $0.recentRuns.removeAll { $0.id == result.id }; $0.recentRuns.insert(result, at: 0)
+            $0.recentRuns = Array($0.recentRuns.prefix(Maintenance.logCount))
+            if let notice = $0.notice, !$0.requiresAction(notice.issue) { $0.notice = nil }
+        }
+    }
     public func activity(_ text: String?) throws {
         try update { $0.activity = text; $0.activityPID = text == nil ? nil : getpid() }
     }

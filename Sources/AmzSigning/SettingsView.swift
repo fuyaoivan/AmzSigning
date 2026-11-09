@@ -17,6 +17,7 @@ private enum SettingsPage: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @StateObject private var model = SettingsModel()
     @SwiftUI.State private var page = SettingsPage.projects
+    @SwiftUI.State private var showingInstallation = false
     private var enabled: [Project] { model.state.projects.filter { $0.enabled } }
     private var paused: Bool { model.state.mode == .away }
 
@@ -41,6 +42,9 @@ struct SettingsView: View {
         .tint(SigningStyle.blue)
         .frame(minWidth: 980, minHeight: 690)
         .task { model.activate() }
+        .sheet(isPresented: $showingInstallation) {
+            DeviceInstallationView(model: model, projects: enabled)
+        }
         .alert("AmzSigning", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("知道了", role: .cancel) { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -86,6 +90,8 @@ struct SettingsView: View {
                 HStack {
                     Text("\(model.state.projects.count) 个项目").font(.system(size: 13)).foregroundStyle(SigningStyle.secondary)
                     Spacer()
+                    Button { showingInstallation = true } label: { Label("安装到 iPhone", systemImage: "iphone.and.arrow.forward") }
+                        .buttonStyle(SigningButtonStyle(kind: .text, compact: true)).disabled(!model.canRenew)
                     Button { model.scanProjects() } label: { Label("扫描项目", systemImage: "plus") }
                         .buttonStyle(SigningButtonStyle(kind: .text, compact: true)).disabled(model.running)
                 }
@@ -217,7 +223,7 @@ struct SettingsView: View {
     private var latestSummary: String {
         guard let run = model.state.recentRuns.first else { return "尚未运行" }
         if run.failureCount > 0 { return "\(run.failureCount) 个项目未完成" }
-        if run.successCount > 0 { return "\(run.successCount) 个项目续签成功" }
+        if run.successCount > 0 { return "\(run.successCount) 个项目\(run.trigger == "安装到 iPhone" ? "安装成功" : "续签成功")" }
         return "检查完成"
     }
 

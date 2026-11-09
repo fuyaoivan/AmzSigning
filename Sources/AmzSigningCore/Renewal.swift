@@ -13,15 +13,15 @@ public struct RenewalReceipt {
     }
 }
 
-public final class XcodeRenewer: Renewing {
+public final class XcodeRenewer: Renewing, DeviceInstalling {
     let runner: CommandRunning
     let profiles: ProfileManager
     let scanner: XcodeScanner
     let devices: DeviceManager
     let paths: Paths
-    public init(runner: CommandRunning, paths: Paths) {
+    public init(runner: CommandRunning, paths: Paths, profileManager: ProfileManager? = nil) {
         self.runner = runner; self.paths = paths
-        profiles = ProfileManager(runner: runner, paths: paths)
+        profiles = profileManager ?? ProfileManager(runner: runner, paths: paths)
         scanner = XcodeScanner(runner: runner, profiles: profiles)
         devices = DeviceManager(runner: runner, paths: paths)
     }
@@ -38,16 +38,33 @@ public final class XcodeRenewer: Renewing {
         let state = try store.read()
         guard let current = state.projects.first(where: { $0.id == project.id }),
               current.managementID == project.managementID, state.eligible(current, at: Date(), force: true), current.bundleID == project.bundleID,
-              current.teamID == project.teamID else { throw AmzError("设置已改变或续签已暂停，已停止后续安装") }
+              current.teamID == project.teamID, current.boundDeviceID == project.boundDeviceID else { throw AmzError("设置已改变或续签已暂停，已停止后续安装") }
     }
     public func renew(_ project: Project, store: StateStore) throws -> RenewalReceipt {
+        try perform(project, deviceUDID: nil, store: store)
+    }
+    public func install(_ project: Project, on deviceUDID: String, store: StateStore) throws -> RenewalReceipt {
+        try perform(project, deviceUDID: deviceUDID, store: store)
+    }
+    private func perform(_ original: Project, deviceUDID: String?, store: StateStore) throws -> RenewalReceipt {
+        var project = original
         guard FileManager.default.isReadableFile(atPath: project.container) else { throw AmzError("项目文件无法读取，请检查项目路径") }
         try Self.validateIdentity(project)
         try checkEnabled(project, store: store)
         try store.activity("\(project.name)：检查 iPhone 连接与已有 App")
-        let (device, installed) = try devices.select(project: project)
-        // Bind before building, so a failure never silently redirects a retry to another phone.
-        try store.updateProject(project.id, managementID: project.managementID) { $0.boundDeviceID = device.udid; $0.deviceName = device.name }
+        let device: Device
+        let installed: InstalledApp?
+        let policy: InstallationPolicy = deviceUDID == nil ? .overwriteExisting : .allowFirstInstall
+        if let deviceUDID {
+            device = try devices.selected(udid: deviceUDID)
+            installed = try devices.app(bundleID: project.bundleID, device: device)
+        } else {
+            (device, installed) = try devices.select(project: project)
+            // Automatic renewal binds before building, but explicit device transfer
+            // commits the new binding only after a verified installation receipt.
+            try store.updateProject(project.id, managementID: project.managementID) { $0.boundDeviceID = device.udid; $0.deviceName = device.name }
+            project.boundDeviceID = device.udid
+        }
         let directory = paths.builds.appendingPathComponent("renew-\(project.id)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -66,13 +83,7 @@ public final class XcodeRenewer: Renewing {
         guard configuredTeam.isEmpty || configuredTeam == project.teamID else { throw AmzError("项目实时 Team 已改变，已停止安装") }
         let version = settings["MARKETING_VERSION"] as? String ?? ""
         let build = settings["CURRENT_PROJECT_VERSION"] as? String ?? ""
-        if !version.isEmpty, !installed.version.isEmpty, version.compare(installed.version, options: .numeric) == .orderedAscending {
-            throw AmzError("源码版本低于 iPhone 上的版本，已停止覆盖，避免数据格式回退")
-        }
-        if version == installed.version, !build.isEmpty, !installed.build.isEmpty,
-           build.compare(installed.build, options: .numeric) == .orderedAscending {
-            throw AmzError("源码构建号低于 iPhone 上的构建号，已停止覆盖")
-        }
+        try installed?.validateReplacement(version: version, build: build)
         var ids = Set([project.bundleID])
         for b in rows.compactMap({ $0["buildSettings"] as? [String: Any] }) {
             if let product = b["PRODUCT_TYPE"] as? String, product.contains("extension"), let id = b["PRODUCT_BUNDLE_IDENTIFIER"] as? String {
@@ -91,6 +102,7 @@ public final class XcodeRenewer: Renewing {
             "-configuration", project.configuration, "-sdk", "iphoneos", "-destination", "id=\(device.udid)",
             "-destination-timeout", "20", "-derivedDataPath", directory.path,
             "-allowProvisioningUpdates", "-disableAutomaticPackageResolution", "-skipPackageUpdates", "build"]
+        if deviceUDID != nil { args.append("-allowProvisioningDeviceRegistration") }
         // A project with an omitted team can reuse its exact existing profile team.
         if configuredTeam.isEmpty { args.append("DEVELOPMENT_TEAM=\(project.teamID)") }
         try runner.checked("/usr/bin/xcodebuild", args, timeout: 600)
@@ -118,8 +130,10 @@ public final class XcodeRenewer: Renewing {
             }
         }
         try checkEnabled(project, store: store)
-        try store.activity("\(project.name)：通过 \(device.transportTitle) 覆盖安装")
-        try devices.install(appURL: appURL, bundleID: project.bundleID, device: device)
+        try store.activity("\(project.name)：通过 \(device.transportTitle) \(deviceUDID == nil ? "覆盖安装" : "安装到所选 iPhone")")
+        try devices.install(appURL: appURL, bundleID: project.bundleID, device: device, policy: policy,
+                            version: info["CFBundleShortVersionString"] as? String ?? version,
+                            build: info["CFBundleVersion"] as? String ?? build)
         return RenewalReceipt(expiration: expiration, profileUUID: profile.uuid, device: device)
     }
 }
@@ -167,13 +181,7 @@ public final class RenewalEngine {
             }
             // Keep completed per-project results even if a later project crashes.
             result.finished = now()
-            try store.update {
-                $0.recentRuns.removeAll { $0.id == result.id }; $0.recentRuns.insert(result, at: 0)
-                $0.recentRuns = Array($0.recentRuns.prefix(Maintenance.logCount))
-                if $0.toolchain?.issue == nil && !$0.projects.contains(where: { $0.enabled && $0.retryIssue != nil }) {
-                    $0.notice = nil
-                }
-            }
+            try store.recordRun(result)
         }
         return result
     }

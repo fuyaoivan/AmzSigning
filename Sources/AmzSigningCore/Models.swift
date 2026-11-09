@@ -52,7 +52,7 @@ public struct Project: Codable, Identifiable, Equatable {
     }
 
     public var expiration: Date? { installedExpiration ?? localExpiration }
-    public var expirationSource: String { installedExpiration == nil ? "本机描述文件，尚未验证安装" : "最近成功覆盖安装的签名" }
+    public var expirationSource: String { installedExpiration == nil ? "本机描述文件，尚未验证安装" : "最近成功安装的签名" }
     public var nextDue: Date {
         if let retry = nextRetry { return retry }
         return lastSuccess?.addingTimeInterval(Timing.renewal) ?? .distantPast

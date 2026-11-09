@@ -37,7 +37,7 @@ public struct SigningProfile {
         }
         guard devices.contains(device.udid) else { throw AmzError("新描述文件不包含目标 iPhone，已停止安装") }
         guard expiration.timeIntervalSince(now) > Timing.minimumValidity else {
-            throw AmzError("Apple 未签发足够长的新签名（到期 \(dateText(expiration))），未安装；6 小时后重试")
+            throw AmzError("Apple 未签发足够长的新签名（到期 \(dateText(expiration))），未安装")
         }
     }
 }
